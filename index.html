@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#2B5F8A">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Data + Python">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="apple-touch-icon" href="icons/icon-180.png">
+<link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+<title>Understanding Data with Python</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="wrap">
+    <div class="top">
+      <div class="logo"><span>&gt;_</span>Understanding Data with Python</div>
+      <div class="stat" title="Day streak">🔥 <span id="hStreak">0</span> <small>day streak</small></div>
+      <div class="stat" title="Experience points">⭐ <span id="hXp">0</span> <small>XP</small></div>
+      <div class="stat" title="Python engine"><i class="dot" id="pyDot"></i><small id="pyTxt">Loading Python…</small></div>
+    </div>
+    <nav role="tablist" id="tabs">
+      <button role="tab" data-t="quest" aria-selected="true">Cases</button>
+      <button role="tab" data-t="flash" aria-selected="false">Flashcards</button>
+      <button role="tab" data-t="play" aria-selected="false">Playground</button>
+      <button role="tab" data-t="sheet" aria-selected="false">Cheat sheet</button>
+      <button role="tab" data-t="settings" aria-selected="false">Progress</button>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <section id="quest"></section>
+  <section id="player" class="hidden"></section>
+  <section id="flash" class="hidden"></section>
+  <section id="play" class="hidden"></section>
+  <section id="sheet" class="hidden"></section>
+  <section id="settings" class="hidden"></section>
+</main>
+<footer>Free, no account. Your progress is saved only in this browser. Python, NumPy and pandas run on your own device — nothing you type leaves it.</footer>
+
+<!-- Python engine: runs in a background worker so an endless loop can be stopped safely -->
+<script type="text/plain" id="workerSrc">
+importScripts(CFG.base + 'pyodide.js');
+const BOOT = `
+import json as _json
+_chart_buf = []
+def _nums(v):
+    return [float(x) for x in v]
+class _Chart:
+    """Tiny charting helper: chart.bar, chart.hist, chart.scatter, chart.line"""
+    def bar(self, labels, values, title=""):
+        _chart_buf.append({"k": "bar", "labels": [str(l) for l in labels], "values": _nums(values), "title": str(title)})
+    def hist(self, values, bins=10, title=""):
+        _chart_buf.append({"k": "hist", "values": _nums(values)[:50000], "bins": int(bins), "title": str(title)})
+    def scatter(self, x, y, line=None, title=""):
+        _chart_buf.append({"k": "scatter", "x": _nums(x)[:5000], "y": _nums(y)[:5000], "line": _nums(line) if line is not None else None, "title": str(title)})
+    def line(self, x, y, title=""):
+        _chart_buf.append({"k": "line", "x": _nums(x)[:5000], "y": _nums(y)[:5000], "title": str(title)})
+chart = _Chart()
+`;
+const PRELUDE = `
+import io as _io, contextlib as _ctx, math as _math
+def _printed(fn, *a):
+    b = _io.StringIO()
+    with _ctx.redirect_stdout(b):
+        fn(*a)
+    return b.getvalue().strip()
+def _tl(x):
+    if hasattr(x, "values") and hasattr(x, "columns"):
+        return x.values.tolist()
+    if hasattr(x, "tolist"):
+        return x.tolist()
+    if isinstance(x, tuple):
+        return list(x)
+    return x
+def _near(a, b):
+    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+        return len(a) == len(b) and all(_near(p, q) for p, q in zip(a, b))
+    if isinstance(a, bool) or isinstance(b, bool) or isinstance(a, str) or isinstance(b, str):
+        return a == b
+    if isinstance(a, (int, float)) and isinstance(b, (int, float)):
+        if _math.isnan(a) and _math.isnan(b):
+            return True
+        return abs(a - b) <= 1e-6 * (1 + abs(b))
+    return a == b
+def _eq(desc, got, want):
+    g = _tl(got)
+    assert _near(g, _tl(want)), f"{desc} should be {want!r}, but your code gave {g!r}"
+def _close(desc, got, want, tol=0.01):
+    try:
+        ok = abs(float(got) - float(want)) <= tol
+    except Exception:
+        ok = False
+    assert ok, f"{desc} should be about {round(float(want), 3)}, but your code gave {got!r}"
+`;
+const ready = loadPyodide({indexURL: CFG.base}).then(py=>{ py.runPython(BOOT); return py; });
+ready.then(()=>postMessage({ready:true}), e=>postMessage({fatal:String(e)}));
+const loaded = new Set(); let skDone = false;
+function fmt(ex){
+  const msg = String((ex && ex.message) || ex).trim();
+  const lines = msg.split('\n');
+  let line = null, m; const re = /File "<exec>", line (\d+)/g;
+  while((m = re.exec(msg))) line = m[1];
+  return {last: lines[lines.length-1], line};
+}
+onmessage = async (e)=>{
+  const {id, code, tests, pre} = e.data;
+  let py; try{ py = await ready; }catch(err){ return; }
+  const all = (pre||'') + '\n' + code + '\n' + (tests||'');
+  const loadErrs = [];
+  try{
+    const sk = /\bsklearn\b/.test(all), pd = /\bpandas\b/.test(all), np = /\bnumpy\b/.test(all);
+    const want = []; if(np || pd || sk) want.push('numpy'); if(pd) want.push('pandas');
+    const todo = want.filter(p => !loaded.has(p));
+    if(todo.length || (sk && !skDone)){
+      postMessage({id, phase:'load'});
+      if(todo.length) await py.loadPackage(todo, {messageCallback: ()=>{}, errorCallback: m => loadErrs.push(String(m))});
+      for(const p of todo){ py.runPython('import ' + p); loaded.add(p); }
+      if(sk && !skDone){
+        py.globals.set('_sk_src', CFG.sklearn);
+        py.runPython('exec(compile(_sk_src, "sklearn_lite.py", "exec"), {"__name__": "sklearn_lite"})');
+        skDone = true;
+      }
+    }
+  }catch(ex){
+    postMessage({id, stdout:'', charts:[], err:{last:'A Python library could not be loaded. Check your internet connection and try again.\n(' + (loadErrs.join(' | ') || String((ex && ex.message) || ex).trim().split('\n').slice(-1)[0]).slice(0, 400) + ')', line:null}, testErr:null});
+    return;
+  }
+  postMessage({id, phase:'run'});
+  const out = []; let n = 0;
+  const push = s => { if(n < 400){ out.push(s); n++; } else if(n === 400){ out.push('… (output cut off)'); n++; } };
+  py.setStdout({batched: push}); py.setStderr({batched: ()=>{}});
+  py.runPython('_chart_buf.clear()');
+  const ns = py.globals.get('dict')();
+  const ch = py.globals.get('chart'); ns.set('chart', ch);
+  let err = null, testErr = null, preErr = false;
+  if(pre){ try{ py.runPython(pre, {globals: ns}); }catch(ex){ err = fmt(ex); err.line = null; preErr = true; } }
+  if(!err){ try{ py.runPython(code, {globals: ns}); }catch(ex){ err = fmt(ex); } }
+  const stdout = out.join('\n');
+  let charts = [];
+  try{ charts = JSON.parse(py.runPython('_json.dumps(_chart_buf[:6])')); }catch(_){}
+  if(!err && tests){
+    try{ ns.set('_out', stdout); ns.set('_src', code); py.runPython(PRELUDE + tests, {globals: ns}); }
+    catch(ex){ testErr = fmt(ex); }
+  }
+  try{ ns.destroy(); ch.destroy(); }catch(_){}
+  postMessage({id, stdout, charts, err, testErr, preErr});
+};
+</script>
+
+<script src="js/core.js"></script>
+<script src="js/sklearn-lite.js"></script>
+<script src="js/part1-python.js"></script>
+<script src="js/part2-data.js"></script>
+<script src="js/part3-stats.js"></script>
+<script src="js/part4-models.js"></script>
+<script src="js/part5-interpret.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
